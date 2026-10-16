@@ -29,8 +29,18 @@ tasks:
     desc: "Válvula de irrigação (Python). Ex.: task valve SOURCE_ID=valvula-b FIELD_ID=talhao-b"
     cmds: [uv run python -m sources.valve.main]
 
+  web:build:
+    desc: Build estático da interface Next.js (web/out)
+    dir: web
+    cmds: [npm ci, npm run build]
+
+  web:dev:
+    desc: Interface em modo dev (http://localhost:3000), usando a ponte em :8080
+    dir: web
+    cmds: [npm run dev]
+
   dashboard:
-    desc: Dashboard web em tempo real (http://localhost:8080)
+    desc: Ponte do dashboard + interface (http://localhost:8080); requer task web:build
     cmds: [uv run python -m dashboard.server]
 
   client:

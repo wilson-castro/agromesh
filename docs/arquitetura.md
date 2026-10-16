@@ -15,12 +15,13 @@ UDP, gRPC e TCP, todos com Protobuf.
 | Sensor de solo (um por talhão) | Python | Telemetria periódica e alerta de solo seco |
 | Válvula (uma por talhão) | Python | Estado, vazão, volume acumulado e serviço gRPC |
 | Cliente CLI | Python | Listar, comandar, consultar e acompanhar eventos via TCP |
-| Dashboard | Python + HTML/JS | Traduzir assinatura TCP em SSE e exibir controles e séries |
+| Ponte do dashboard | Python | Traduzir a assinatura TCP em SSE/JSON e servir o build da interface |
+| Interface web | Next.js + TypeScript (shadcn/ui) | Indicadores, séries, alertas, controle das válvulas e consultas |
 
 ```mermaid
 flowchart LR
     C[CLI Python] <-->|TCP + Protobuf| G[Gateway Go]
-    B[Navegador] <-->|HTTP + JSON/SSE| D[Dashboard Python]
+    B[Navegador · Next.js] <-->|HTTP + JSON/SSE| D[Ponte Python]
     D <-->|TCP + Protobuf| G
     G -->|Descoberta UDP multicast| S[Fontes Java e Python]
     S -->|Anúncios e leituras UDP + Protobuf| G
