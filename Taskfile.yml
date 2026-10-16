@@ -1,0 +1,50 @@
+version: "3"
+
+tasks:
+  proto:
+    desc: Gera código Protobuf/gRPC (Go e Python)
+    cmds: [./scripts/build_protos.sh]
+
+  deps:
+    desc: Instala dependências Go e Python
+    cmds:
+      - go mod download
+      - uv sync
+
+  gateway:
+    desc: Gateway (Go)
+    cmds: [go run ./gateway]
+
+  weather:
+    desc: Estação meteorológica (Java 21; Maven gera o Protobuf)
+    cmds:
+      - mvn -B -f sources/weather/pom.xml package
+      - java -jar sources/weather/target/weather-0.1.0.jar
+
+  soil:
+    desc: "Sensor de solo (Python). Ex.: task soil SOURCE_ID=solo-b FIELD_ID=talhao-b"
+    cmds: [uv run python -m sources.soil.main]
+
+  valve:
+    desc: "Válvula de irrigação (Python). Ex.: task valve SOURCE_ID=valvula-b FIELD_ID=talhao-b"
+    cmds: [uv run python -m sources.valve.main]
+
+  dashboard:
+    desc: Dashboard web em tempo real (http://localhost:8080)
+    cmds: [uv run python -m dashboard.server]
+
+  client:
+    desc: "Cliente CLI. Ex.: task client -- list"
+    cmds: [uv run python -m client.main {{.CLI_ARGS}}]
+
+  test:
+    desc: Testes Go e Python
+    cmds:
+      - go test ./...
+      - uv run pytest -q
+
+  lint:
+    cmds:
+      - go vet ./...
+      - gofmt -l .
+      - uv run ruff check .
