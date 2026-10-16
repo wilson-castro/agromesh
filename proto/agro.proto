@@ -1,5 +1,4 @@
-// Contrato único do AgroMesh: todas as mensagens do sistema (UDP, gRPC e TCP)
-// são definidas aqui para que Go e Python compartilhem exatamente o mesmo formato.
+// Todas as mensagens do AgroMesh, trafegando por UDP, gRPC ou TCP.
 syntax = "proto3";
 
 package agromesh;
@@ -8,14 +7,12 @@ option go_package = "agromesh/gen/go/agropb;agropb";
 
 enum SourceKind {
   SOURCE_KIND_UNSPECIFIED = 0;
-  SOIL_SENSOR = 1;      // umidade do solo por talhão (Python, periódico + evento)
-  WEATHER_STATION = 2;  // estação meteorológica (Go, contínua)
-  IRRIGATION_VALVE = 3; // válvula de irrigação (Python, controlável via gRPC)
+  SOIL_SENSOR = 1;      // periódico, com alerta imediato de solo seco
+  WEATHER_STATION = 2;  // contínua
+  IRRIGATION_VALVE = 3; // controlável via gRPC
 }
 
-// ---------------------------------------------------------------------------
 // Descoberta (UDP multicast -> resposta UDP unicast)
-// ---------------------------------------------------------------------------
 
 // Enviada pelo Gateway ao grupo multicast; diz às fontes para onde mandar dados.
 message DiscoveryRequest {
@@ -35,9 +32,7 @@ message SourceInfo {
   map<string, string> attributes = 8; // estado inicial específico do tipo
 }
 
-// ---------------------------------------------------------------------------
 // Telemetria (UDP unicast)
-// ---------------------------------------------------------------------------
 
 message Reading {
   string source_id = 1;
@@ -57,9 +52,7 @@ message UdpPacket {
   }
 }
 
-// ---------------------------------------------------------------------------
 // gRPC: Gateway -> Válvula de irrigação
-// ---------------------------------------------------------------------------
 
 message ValveStateRequest {}
 
@@ -86,9 +79,7 @@ service IrrigationValve {
   rpc Configure(ValveCommand) returns (ValveState);
 }
 
-// ---------------------------------------------------------------------------
 // TCP: Cliente/Dashboard <-> Gateway (frames: uint32 big-endian + payload)
-// ---------------------------------------------------------------------------
 
 enum QueryKind {
   QUERY_KIND_UNSPECIFIED = 0;

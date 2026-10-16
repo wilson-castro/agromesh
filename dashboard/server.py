@@ -1,8 +1,9 @@
-"""Dashboard web em tempo real.
+"""Ponte HTTP entre a interface web e o gateway.
 
-O navegador não fala Protobuf/TCP, então este processo é um cliente TCP do
-Gateway (como o CLI) que traduz para HTTP: uma assinatura TCP alimenta um
-fluxo Server-Sent Events, e comandos/consultas viram requisições TCP avulsas.
+O navegador não fala Protobuf sobre TCP, então este processo é um cliente TCP do
+gateway, como o CLI: a assinatura alimenta um fluxo Server-Sent Events e cada
+comando ou consulta vira uma requisição TCP avulsa. Também serve o build estático
+da interface Next.js.
 """
 
 import json

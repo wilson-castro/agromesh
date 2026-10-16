@@ -1,5 +1,4 @@
-// Package netx reúne utilitários de rede e configuração compartilhados pelos
-// processos Go (Gateway e estação meteorológica).
+// Package netx reúne a leitura de configuração e a descoberta do IP local do gateway.
 package netx
 
 import (

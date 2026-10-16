@@ -1,4 +1,4 @@
-"""Leitura de configuração por variáveis de ambiente (iguais às dos processos Go)."""
+"""Configuração por variáveis de ambiente, com os mesmos nomes usados no gateway."""
 
 import os
 import socket

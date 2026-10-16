@@ -71,7 +71,6 @@ class Valve(pb_grpc.IrrigationValveServicer):
         self.runtime = SourceRuntime(self.describe)
         self._wake = threading.Event()
 
-    # --- gRPC -------------------------------------------------------------
     def GetState(self, request: pb.ValveStateRequest, context: grpc.ServicerContext) -> pb.ValveState:
         with self.lock:
             return self.model.to_proto()
@@ -84,7 +83,6 @@ class Valve(pb_grpc.IrrigationValveServicer):
         self._wake.set()  # telemetria imediata refletindo o novo estado
         return state
 
-    # --- descoberta & telemetria -----------------------------------------
     def describe(self) -> pb.SourceInfo:
         with self.lock:
             m = self.model
