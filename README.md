@@ -2,7 +2,8 @@
 
 Fazenda inteligente com monitoramento e irrigação por talhão: sockets TCP/UDP,
 descoberta multicast, Protobuf e controle gRPC.
-Gateway em Go e estação meteorológica em Java 21; sensores de solo, válvulas, CLI e dashboard em Python.
+Gateway em Go e estação meteorológica em Java 21; sensores de solo, válvulas, CLI e ponte do
+dashboard em Python; interface web em Next.js + TypeScript com shadcn/ui.
 
 ## Executar com Docker
 
@@ -56,6 +57,15 @@ seu contador de litros; veja as limitações em [docs/arquitetura.md](docs/arqui
 O CLI e o servidor do dashboard acessam somente o gateway via TCP. O navegador acessa
 somente o servidor HTTP do dashboard. O contrato distribuído está em `proto/agro.proto`;
 o trecho web usa JSON/SSE como adaptação de apresentação.
+
+A interface fica em `web/` (Next.js, TypeScript, Tailwind e shadcn/ui, gráficos com Recharts).
+O build é estático (`next build` gera `web/out`) e servido pela ponte `dashboard/server.py`,
+que também expõe `/events` (SSE) e `/api/*`. No Docker, a imagem Python faz esse build numa
+etapa Node. Para desenvolver a interface com recarga automática, com o restante do sistema no ar:
+
+```bash
+cd web && npm ci && npm run dev   # http://localhost:3000, encaminha /events e /api para :8080
+```
 A estação Java usa classes geradas pelo Maven a partir do mesmo `.proto`, em
 `sources/weather/target/generated-sources/protobuf/java` (não editar à mão).
 
