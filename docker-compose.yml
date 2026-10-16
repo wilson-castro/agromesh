@@ -1,0 +1,57 @@
+# network_mode: host em todos os serviços: a bridge padrão do Docker não
+# encaminha o multicast UDP usado na descoberta.
+x-python: &python
+  build: { context: ., dockerfile: docker/python.Dockerfile }
+  image: agromesh-python
+  network_mode: host
+  restart: unless-stopped
+
+services:
+  gateway:
+    build: { context: ., dockerfile: docker/go.Dockerfile, args: { TARGET: gateway } }
+    network_mode: host
+    environment:
+      DB_PATH: /data/agromesh.db
+    volumes: [gateway-data:/data]
+    restart: unless-stopped
+
+  estacao:
+    build: { context: ., dockerfile: docker/java.Dockerfile }
+    network_mode: host
+    environment: { SOURCE_ID: estacao-01, FIELD_ID: sede, INTERVAL_S: "3" }
+    restart: unless-stopped
+
+  solo-a:
+    <<: *python
+    command: python -m sources.soil.main
+    environment: { SOURCE_ID: solo-a, FIELD_ID: talhao-a, INTERVAL_S: "4" }
+
+  solo-b:
+    <<: *python
+    command: python -m sources.soil.main
+    environment: { SOURCE_ID: solo-b, FIELD_ID: talhao-b, INTERVAL_S: "4" }
+
+  valvula-a:
+    <<: *python
+    command: python -m sources.valve.main
+    environment: { SOURCE_ID: valvula-a, FIELD_ID: talhao-a, GRPC_PORT: "50061", FLOW_LPM: "25" }
+
+  valvula-b:
+    <<: *python
+    command: python -m sources.valve.main
+    environment: { SOURCE_ID: valvula-b, FIELD_ID: talhao-b, GRPC_PORT: "50062", FLOW_LPM: "18" }
+
+  dashboard:
+    <<: *python
+    command: python -m dashboard.server
+    environment: { DASHBOARD_PORT: "8080" }
+
+  # Uso: docker compose run --rm client list
+  client:
+    <<: *python
+    entrypoint: ["python", "-m", "client.main"]
+    restart: "no"
+    profiles: [tools]
+
+volumes:
+  gateway-data:
