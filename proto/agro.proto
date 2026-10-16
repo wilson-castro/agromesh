@@ -1,0 +1,162 @@
+// Contrato único do AgroMesh: todas as mensagens do sistema (UDP, gRPC e TCP)
+// são definidas aqui para que Go e Python compartilhem exatamente o mesmo formato.
+syntax = "proto3";
+
+package agromesh;
+
+option go_package = "agromesh/gen/go/agropb;agropb";
+
+enum SourceKind {
+  SOURCE_KIND_UNSPECIFIED = 0;
+  SOIL_SENSOR = 1;      // umidade do solo por talhão (Python, periódico + evento)
+  WEATHER_STATION = 2;  // estação meteorológica (Go, contínua)
+  IRRIGATION_VALVE = 3; // válvula de irrigação (Python, controlável via gRPC)
+}
+
+// ---------------------------------------------------------------------------
+// Descoberta (UDP multicast -> resposta UDP unicast)
+// ---------------------------------------------------------------------------
+
+// Enviada pelo Gateway ao grupo multicast; diz às fontes para onde mandar dados.
+message DiscoveryRequest {
+  string gateway_ip = 1;
+  uint32 gateway_udp_port = 2;
+}
+
+// Resposta de uma fonte à descoberta: tipo, endereço e estado inicial.
+message SourceInfo {
+  string source_id = 1;
+  SourceKind kind = 2;
+  string field_id = 3;              // talhão onde a fonte está instalada
+  string ip = 4;
+  uint32 grpc_port = 5;             // 0 = fonte não controlável
+  bool active = 6;
+  uint32 interval_s = 7;
+  map<string, string> attributes = 8; // estado inicial específico do tipo
+}
+
+// ---------------------------------------------------------------------------
+// Telemetria (UDP unicast)
+// ---------------------------------------------------------------------------
+
+message Reading {
+  string source_id = 1;
+  SourceKind kind = 2;
+  string field_id = 3;
+  int64 timestamp_ms = 4;
+  map<string, double> metrics = 5;
+  bool is_alert = 6;      // true quando enviado imediatamente por evento
+  string alert_message = 7;
+}
+
+// Um único datagrama no socket de ingestão do Gateway: ou anúncio, ou leitura.
+message UdpPacket {
+  oneof payload {
+    SourceInfo announcement = 1;
+    Reading reading = 2;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// gRPC: Gateway -> Válvula de irrigação
+// ---------------------------------------------------------------------------
+
+message ValveStateRequest {}
+
+// Campos opcionais: só o que vier preenchido é alterado.
+message ValveCommand {
+  optional bool active = 1;      // liga/desliga a fonte (simula falha quando false)
+  optional bool open = 2;        // abre/fecha a válvula
+  optional double flow_lpm = 3;  // vazão em litros/minuto quando aberta
+  optional uint32 interval_s = 4; // frequência de envio da telemetria
+}
+
+message ValveState {
+  string source_id = 1;
+  string field_id = 2;
+  bool active = 3;
+  bool open = 4;
+  double flow_lpm = 5;
+  uint32 interval_s = 6;
+  double liters_total = 7;
+}
+
+service IrrigationValve {
+  rpc GetState(ValveStateRequest) returns (ValveState);
+  rpc Configure(ValveCommand) returns (ValveState);
+}
+
+// ---------------------------------------------------------------------------
+// TCP: Cliente/Dashboard <-> Gateway (frames: uint32 big-endian + payload)
+// ---------------------------------------------------------------------------
+
+enum QueryKind {
+  QUERY_KIND_UNSPECIFIED = 0;
+  DRIEST_FIELD = 1;      // talhão com menor umidade média na janela
+  WATER_USAGE = 2;       // litros consumidos por talhão na janela
+  TEMPERATURE_STATS = 3; // média, desvio padrão, mín e máx da temperatura do ar
+  ALERTS_PER_FIELD = 4;  // quantidade de alertas de seca por talhão
+}
+
+message ListSourcesRequest {}
+
+message SubscribeRequest {}
+
+message CommandRequest {
+  string source_id = 1;
+  ValveCommand command = 2;
+}
+
+message QueryRequest {
+  QueryKind kind = 1;
+  uint32 window_minutes = 2;
+}
+
+message ClientRequest {
+  uint64 request_id = 1;
+  oneof body {
+    ListSourcesRequest list_sources = 2;
+    CommandRequest command = 3;
+    QueryRequest query = 4;
+    SubscribeRequest subscribe = 5; // passa a receber leituras e mudanças de topologia
+  }
+}
+
+message SourceStatus {
+  SourceInfo info = 1;
+  bool online = 2;
+  int64 last_seen_ms = 3;
+  map<string, double> last_metrics = 4;
+}
+
+message SourceList {
+  repeated SourceStatus sources = 1;
+}
+
+message CommandResult {
+  bool ok = 1;
+  string message = 2;
+  ValveState state = 3;
+}
+
+message QueryRow {
+  string label = 1;
+  map<string, double> values = 2;
+}
+
+message QueryResult {
+  QueryKind kind = 1;
+  string summary = 2;
+  repeated QueryRow rows = 3;
+}
+
+message ServerMessage {
+  uint64 request_id = 1; // 0 em mensagens empurradas por assinatura
+  oneof body {
+    SourceList sources = 2;
+    CommandResult command_result = 3;
+    QueryResult query_result = 4;
+    Reading reading = 5;
+    string error = 6;
+  }
+}
