@@ -17,6 +17,9 @@ from common.source_runtime import SourceRuntime
 
 SAMPLE_PERIOD_S = 1.0
 CYCLE_S = 240.0  # período da oscilação simulada de umidade
+# Histerese: o ruído da leitura faz a umidade oscilar em torno do limiar; só
+# rearmamos o alerta depois que o solo se recupera com folga.
+REARM_MARGIN_PCT = 2.0
 
 log = logging.getLogger("soil")
 
@@ -69,12 +72,14 @@ class SoilSensor:
 
     def _check_event(self, metrics: dict[str, float]) -> None:
         """Dispara o alerta só na transição úmido -> seco, para não inundar o Gateway."""
-        is_dry = metrics["moisture_pct"] < self.dry_threshold
-        if is_dry and not self._was_dry:
-            message = f"solo seco: {metrics['moisture_pct']:.1f}% < {self.dry_threshold:.0f}%"
+        moisture = metrics["moisture_pct"]
+        if not self._was_dry and moisture < self.dry_threshold:
+            self._was_dry = True
+            message = f"solo seco: {moisture:.1f}% < {self.dry_threshold:.0f}%"
             if self.runtime.send_reading(self._reading(metrics, alert=message)):
                 log.warning("ALERTA enviado imediatamente: %s", message)
-        self._was_dry = is_dry
+        elif self._was_dry and moisture >= self.dry_threshold + REARM_MARGIN_PCT:
+            self._was_dry = False
 
     def _reading(self, metrics: dict[str, float], alert: str = "") -> pb.Reading:
         return pb.Reading(
