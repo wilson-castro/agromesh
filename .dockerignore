@@ -7,3 +7,6 @@
 .shot
 .pytest_cache
 .ruff_cache
+web/node_modules
+web/.next
+web/out
