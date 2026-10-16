@@ -7,6 +7,7 @@ fluxo Server-Sent Events, e comandos/consultas viram requisições TCP avulsas.
 
 import json
 import logging
+import mimetypes
 import queue
 import threading
 import time
@@ -17,14 +18,15 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from common.config import env_int
+from common.config import env, env_int
 from common.gateway_client import QUERY_KINDS, GatewayClient, GatewayError
 from common.pb import pb
 
 HISTORY_PER_SOURCE = 400  # ~10 min de leituras na frequência padrão
 ALERT_HISTORY = 50
 RECONNECT_DELAY_S = 2.0
-INDEX_HTML = Path(__file__).parent / "static" / "index.html"
+# Build estático do frontend Next.js (web/out); configurável para o container.
+WEB_ROOT = Path(env("WEB_ROOT", str(Path(__file__).resolve().parent.parent / "web" / "out"))).resolve()
 
 log = logging.getLogger("dashboard")
 
@@ -138,6 +140,16 @@ def gateway_feed(state: LiveState) -> None:
         time.sleep(RECONNECT_DELAY_S)
 
 
+def resolve_static(path: str) -> Path | None:
+    """Mapeia a URL para um arquivo do build, sem permitir sair de WEB_ROOT."""
+    relative = path.lstrip("/") or "index.html"
+    for candidate in (WEB_ROOT / relative, WEB_ROOT / f"{relative}.html", WEB_ROOT / relative / "index.html"):
+        file = candidate.resolve()
+        if file.is_file() and file.is_relative_to(WEB_ROOT):
+            return file
+    return None
+
+
 def build_command(data: dict[str, Any]) -> pb.ValveCommand:
     command = pb.ValveCommand()
     if "open" in data:
@@ -156,14 +168,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         url = urlparse(self.path)
-        if url.path == "/":
-            self._send(HTTPStatus.OK, INDEX_HTML.read_bytes(), "text/html; charset=utf-8")
-        elif url.path == "/events":
+        if url.path == "/events":
             self._stream_events()
         elif url.path == "/api/query":
             self._query(parse_qs(url.query))
         else:
+            self._static(url.path)
+
+    def _static(self, path: str) -> None:
+        file = resolve_static(path)
+        if file is None:
             self._send(HTTPStatus.NOT_FOUND, b"not found", "text/plain")
+            return
+        content_type = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
+        self._send(HTTPStatus.OK, file.read_bytes(), content_type)
 
     def do_POST(self) -> None:
         if urlparse(self.path).path != "/api/command":
