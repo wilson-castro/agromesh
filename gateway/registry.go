@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	"agromesh/gen/go/agropb"
 )
 
@@ -15,6 +17,8 @@ import (
 const minOfflineTimeout = 6 * time.Second
 
 type sourceEntry struct {
+	// info nunca é alterado depois de publicado: snapshots o compartilham e são
+	// serializados fora do lock. Mudanças substituem o ponteiro por uma cópia.
 	info        *agropb.SourceInfo
 	lastSeen    time.Time
 	lastMetrics map[string]float64
@@ -78,18 +82,20 @@ func (r *Registry) ApplyValveState(st *agropb.ValveState) {
 		r.mu.Unlock()
 		return
 	}
-	e.info.Active = st.Active
-	e.info.IntervalS = st.IntervalS
-	e.info.Attributes = map[string]string{
+	info := proto.Clone(e.info).(*agropb.SourceInfo)
+	info.Active = st.Active
+	info.IntervalS = st.IntervalS
+	info.Attributes = map[string]string{
 		"open":     strconv.FormatBool(st.Open),
 		"flow_lpm": strconv.FormatFloat(st.FlowLpm, 'f', 1, 64),
 	}
+	e.info = info
 	snap := r.snapshotLocked()
 	r.mu.Unlock()
 	r.onChange(snap)
 }
 
-// Lookup devolve uma cópia das informações de uma fonte.
+// Lookup devolve as informações de uma fonte; o resultado não deve ser alterado.
 func (r *Registry) Lookup(id string) (*agropb.SourceInfo, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -25,3 +25,19 @@ func TestReapMarksSilentSourceOffline(t *testing.T) {
 		t.Fatalf("fonte deveria voltar online (mudanças=%d)", changes)
 	}
 }
+
+func TestApplyValveStateKeepsPublishedInfoUnchanged(t *testing.T) {
+	r := NewRegistry(func(*agropb.SourceList) {})
+	r.Announce(&agropb.SourceInfo{SourceId: "valvula-a", Active: true, IntervalS: 2})
+	before, _ := r.Lookup("valvula-a")
+
+	r.ApplyValveState(&agropb.ValveState{SourceId: "valvula-a", Active: false, IntervalS: 5, Open: true})
+
+	after, _ := r.Lookup("valvula-a")
+	if !before.Active || before.IntervalS != 2 {
+		t.Fatalf("snapshot anterior foi alterado: %+v", before)
+	}
+	if after.Active || after.IntervalS != 5 || after.Attributes["open"] != "true" {
+		t.Fatalf("estado novo não aplicado: %+v", after)
+	}
+}
