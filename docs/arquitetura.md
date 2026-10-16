@@ -1,85 +1,84 @@
-# AgroMesh — domínio e arquitetura
+# Arquitetura
 
-## Visão geral
+A fazenda tem dois talhões, cada um com um sensor de umidade do solo e uma válvula de
+irrigação, e uma estação meteorológica na sede. Os dados são simulados. Todo o tráfego entre
+processos usa Protobuf, sobre UDP multicast, UDP, gRPC ou TCP.
 
-Monitorar dois talhões de uma fazenda e permitir que um operador controle a irrigação
-em uma única tela. Os dados são simulados; processos Go, Java e Python se integram por UDP multicast,
-UDP, gRPC e TCP, todos com Protobuf.
-
-## Processos e responsabilidades
-
-| Componente | Linguagem | Responsabilidade |
+| Componente | Linguagem | Papel |
 |---|---|---|
 | Gateway | Go | Descoberta, registro de fontes, ingestão, SQLite, consultas e proxy gRPC |
 | Estação meteorológica | Java 21 | Temperatura, umidade do ar, vento e chuva |
-| Sensor de solo (um por talhão) | Python | Telemetria periódica e alerta de solo seco |
-| Válvula (uma por talhão) | Python | Estado, vazão, volume acumulado e serviço gRPC |
-| Cliente CLI | Python | Listar, comandar, consultar e acompanhar eventos via TCP |
-| Ponte do dashboard | Python | Traduzir a assinatura TCP em SSE/JSON e servir o build da interface |
-| Interface web | Next.js + TypeScript (shadcn/ui) | Indicadores, séries, alertas, controle das válvulas e consultas |
+| Sensor de solo (um por talhão) | Python | Umidade e temperatura do solo; alerta de solo seco |
+| Válvula (uma por talhão) | Python | Vazão e volume acumulado; servidor gRPC |
+| CLI | Python | Lista fontes, envia comandos, consulta e acompanha leituras |
+| Ponte do painel | Python | Converte a assinatura TCP em SSE/JSON e serve a interface |
+| Interface web | Next.js + TypeScript | Painel com indicadores, gráficos, alertas, comandos e consultas |
 
 ```mermaid
 flowchart LR
-    C[CLI Python] <-->|TCP + Protobuf| G[Gateway Go]
-    B[Navegador · Next.js] <-->|HTTP + JSON/SSE| D[Ponte Python]
+    C[CLI] <-->|TCP + Protobuf| G[Gateway]
+    B[Navegador] <-->|HTTP + JSON/SSE| D[Ponte do painel]
     D <-->|TCP + Protobuf| G
-    G -->|Descoberta UDP multicast| S[Fontes Java e Python]
-    S -->|Anúncios e leituras UDP + Protobuf| G
-    G <-->|gRPC| V[Válvulas Python]
-    V -->|Telemetria UDP + Protobuf| G
+    G -->|descoberta, UDP multicast| S[Fontes]
+    S -->|anúncios e leituras, UDP| G
+    G <-->|gRPC| V[Válvulas]
     G <--> DB[(SQLite)]
 ```
 
-## Contrato Protobuf
+Clientes nunca falam com as fontes: comandos e consultas sempre passam pelo gateway.
 
-Contrato único: `proto/agro.proto`. Código gerado em `gen/go/agropb` e `gen/python`.
+## Descoberta e telemetria
 
-| Fluxo | Mensagens | Conteúdo |
-|---|---|---|
-| Descoberta | `DiscoveryRequest` | Endereço e porta UDP do gateway |
-| Anúncio | `SourceInfo` em `UdpPacket` | Identidade, tipo, talhão, endereço, gRPC e configuração |
-| Telemetria | `Reading` em `UdpPacket` | Timestamp em ms, métricas, indicador e texto de alerta |
-| Requisição TCP | `ClientRequest` | `request_id` e uma operação: listar, comandar, consultar ou assinar |
-| Resposta/evento TCP | `ServerMessage` | Fontes, resultado de comando/consulta, leitura ou erro |
-| Estado das fontes | `SourceStatus`, `SourceList` | Última leitura, disponibilidade e metadados |
-| Consulta | `QueryRequest`, `QueryResult`, `QueryRow` | Tipo, janela em minutos e valores agregados |
+O gateway envia um `DiscoveryRequest` ao grupo multicast ao iniciar e depois a cada 15 s,
+para encontrar também as fontes que sobem mais tarde ou reiniciam. Cada fonte responde com
+um `SourceInfo` por UDP unicast: tipo, talhão, IP, porta gRPC (zero quando não é
+controlável) e estado inicial. Até receber a primeira descoberta, a fonte não conhece o
+gateway e descarta as leituras.
 
-O TCP delimita cada mensagem com tamanho uint32 big-endian. Respostas usam o
-`request_id` recebido; eventos da assinatura usam zero. Os campos `oneof` identificam
-o conteúdo de cada envelope sem depender de convenções de texto.
+As leituras chegam como `Reading` no mesmo socket UDP dos anúncios, ambos dentro de um
+`UdpPacket`. Uma fonte passa a constar como offline quando fica sem enviar dados por três
+intervalos, com mínimo de 6 s, e volta a constar como online na leitura seguinte.
+
+O sensor de solo amostra a cada segundo e envia leituras periódicas. Quando a umidade cai
+abaixo de 25%, envia na hora uma leitura marcada como alerta. Para o ruído da medição não
+gerar uma rajada de alertas, ele só volta a alertar depois que a umidade sobe 2 pontos
+acima do limiar.
 
 ## Serviço gRPC
 
-`IrrigationValve` expõe `GetState(ValveStateRequest) → ValveState` e
-`Configure(ValveCommand) → ValveState`.
+`IrrigationValve` tem dois métodos: `GetState` e `Configure`. O `ValveCommand` usa campos
+`optional` (`active`, `open`, `flow_lpm`, `interval_s`) para que a válvula altere só o que
+veio preenchido, distinguindo "não mexer" de `false` ou zero. A resposta é o `ValveState`
+completo.
 
-`ValveCommand` tem campos opcionais `active`, `open`, `flow_lpm` e `interval_s`:
-a presença distingue “não alterar” de valores como `false`. O retorno inclui identidade,
-talhão, atividade, abertura, vazão, intervalo e litros acumulados. O gateway resolve a
-fonte pelo registro e encaminha o comando; clientes não acessam as válvulas diretamente.
-Desativar interrompe a telemetria, preservando o gRPC para permitir reativação.
+Desativar uma válvula (`active = false`) interrompe a telemetria e fecha o fluxo de água,
+mas mantém o servidor gRPC no ar para que ela possa ser reativada.
 
-## Funcionalidades
+## Protocolo TCP
 
-- Três tipos de fonte, cada instância em processo separado: estação, solo e válvula.
-- Descoberta multicast e anúncios unicast; ingestão UDP com Protobuf.
-- Solo amostrado a cada segundo; alerta imediato ao passar de úmido para abaixo de 25%.
-- Controle gRPC de abertura, vazão, intervalo e falha simulada.
-- Cliente separado via socket TCP, com listagem, comandos e quatro consultas.
-- Histórico SQLite e dashboard com atualizações, mudanças de topologia e alertas.
+Cada mensagem é precedida por 4 bytes big-endian com o tamanho do payload. O cliente envia
+`ClientRequest` com um `request_id` e uma operação: listar fontes, comandar uma válvula,
+consultar o histórico ou assinar eventos. O gateway responde com `ServerMessage` usando o
+mesmo `request_id`. Depois de uma assinatura, a conexão também recebe leituras e mudanças
+de topologia com `request_id` zero.
 
-## Consultas e limites
+## Consultas
 
 | Consulta | Cálculo na janela |
 |---|---|
-| Talhão mais seco | Menor média das amostras de umidade por talhão |
-| Consumo de água | Soma, por talhão, de `máximo − mínimo` do contador de cada válvula |
+| Talhão mais seco | Menor média de umidade por talhão |
+| Consumo de água | Soma, por talhão, de máximo − mínimo do contador de litros de cada válvula |
 | Temperatura | Média, desvio padrão populacional, mínimo e máximo por estação |
-| Alertas | Contagem de eventos de seca por talhão |
+| Alertas | Número de alertas de solo seco por talhão |
 
-UDP pode perder dados. O consumo é estimado pelas amostras disponíveis: uma única
-amostra resulta em zero, e reinícios do contador dentro da janela comprometem a estimativa.
-O histórico persiste no gateway; os contadores das válvulas ficam em memória.
-A disponibilidade é inferida por ausência de leituras, sujeita a atrasos e perdas.
-O gráfico do navegador mantém uma janela recente; consultas usam o histórico SQLite.
-As simulações de solo e válvula são independentes: abrir irrigação não modifica o solo.
+O histórico é gravado em formato longo, com uma linha por métrica, para que qualquer
+grandeza seja agregada com o mesmo SQL.
+
+## Limitações
+
+- UDP pode perder pacotes, e as consultas trabalham só com o que chegou.
+- O contador de litros fica em memória na válvula. Se ela reiniciar dentro da janela, o
+  consumo calculado fica errado.
+- A detecção de falha se baseia em silêncio, então uma fonte lenta e uma fonte morta só
+  se diferenciam pelo tempo.
+- As simulações são independentes: abrir uma válvula não altera a umidade do solo.
