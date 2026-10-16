@@ -1,0 +1,41 @@
+[project]
+name = "agromesh"
+version = "0.1.0"
+description = "Fazenda inteligente: sistema distribuído de monitoramento e irrigação"
+requires-python = ">=3.12"
+dependencies = [
+    "grpcio>=1.67.1",
+    "protobuf>=5.28.3",
+]
+
+[dependency-groups]
+dev = [
+    "grpcio-tools>=1.67.1",
+    "pytest>=8.3",
+    "ruff>=0.7",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+extend-exclude = ["gen"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "BLE", "S", "RUF", "PYI"]
+
+[tool.ruff.lint.per-file-ignores]
+# pytest usa assert para verificar os resultados.
+"tests/*.py" = ["S101"]
+# Aleatoriedade apenas para simular leituras; não há uso criptográfico.
+"sources/soil/main.py" = ["S311"]
+# O dashboard precisa aceitar conexões externas ao container.
+"dashboard/server.py" = ["S104"]
+# A associação multicast usa todas as interfaces locais (INADDR_ANY).
+"common/source_runtime.py" = ["S104"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
