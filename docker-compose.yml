@@ -8,7 +8,7 @@ x-python: &python
 
 services:
   gateway:
-    build: { context: ., dockerfile: docker/go.Dockerfile, args: { TARGET: gateway } }
+    build: { context: ., dockerfile: docker/go.Dockerfile }
     network_mode: host
     environment:
       DB_PATH: /data/agromesh.db
