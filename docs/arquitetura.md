@@ -1,18 +1,22 @@
 # Arquitetura
 
-A fazenda tem dois talhões, cada um com um sensor de umidade do solo e uma válvula de
-irrigação, e uma estação meteorológica na sede. Os dados são simulados. Todo o tráfego entre
-processos usa Protobuf, sobre UDP multicast, UDP, gRPC ou TCP.
+Este documento explica como as partes do AgroMesh se conectam e que mensagens trocam. Para entender o problema que o sistema resolve, leia antes [negocio.md](negocio.md). Os detalhes de cada programa estão em [servicos.md](servicos.md).
 
-| Componente | Linguagem | Papel |
+## Visão geral
+
+O sistema é formado por vários programas independentes, que conversam pela rede. Cada programa é um processo, e no Docker cada um roda no seu próprio container (um ambiente isolado com tudo que o programa precisa).
+
+| Programa | Linguagem | Papel |
 |---|---|---|
-| Gateway | Go | Descoberta, registro de fontes, ingestão, SQLite, consultas e proxy gRPC |
-| Estação meteorológica | Java 21 | Temperatura, umidade do ar, vento e chuva |
-| Sensor de solo (um por talhão) | Python | Umidade e temperatura do solo; alerta de solo seco |
-| Válvula (uma por talhão) | Python | Vazão e volume acumulado; servidor gRPC |
-| CLI | Python | Lista fontes, envia comandos, consulta e acompanha leituras |
-| Ponte do painel | Python | Converte a assinatura TCP em SSE/JSON e serve a interface |
-| Interface web | Next.js + TypeScript | Painel com indicadores, gráficos, alertas, comandos e consultas |
+| Gateway | Go | Centro do sistema. Encontra as fontes, recebe as medições, guarda o histórico e repassa os comandos. |
+| Estação meteorológica | Java 21 | Fonte que envia temperatura, umidade do ar, vento e chuva. |
+| Sensor de solo (um por talhão) | Python | Fonte que envia umidade e temperatura do solo e avisa quando a terra seca. |
+| Válvula (uma por talhão) | Python | Fonte que pode ser comandada. Envia vazão e litros acumulados. |
+| CLI | Python | Programa de terminal para listar fontes, comandar válvulas e fazer consultas. |
+| Ponte do painel | Python | Liga o navegador ao Gateway e entrega a interface web. |
+| Interface web | Next.js e TypeScript | O painel que aparece no navegador. |
+
+Chamamos de fonte todo equipamento que produz dados, ou seja, a estação, os sensores e as válvulas.
 
 ```mermaid
 flowchart LR
@@ -25,60 +29,91 @@ flowchart LR
     G <--> DB[(SQLite)]
 ```
 
-Clientes nunca falam com as fontes: comandos e consultas sempre passam pelo gateway.
+O Gateway é o único ponto de contato. O CLI e o painel nunca falam direto com as fontes. Todo comando e toda consulta passam por ele.
 
-## Descoberta e telemetria
+## Formas de comunicação
 
-O gateway envia um `DiscoveryRequest` ao grupo multicast ao iniciar e depois a cada 15 s,
-para encontrar também as fontes que sobem mais tarde ou reiniciam. Cada fonte responde com
-um `SourceInfo` por UDP unicast: tipo, talhão, IP, porta gRPC (zero quando não é
-controlável) e estado inicial. Até receber a primeira descoberta, a fonte não conhece o
-gateway e descarta as leituras.
+As mensagens têm formato definido no arquivo `proto/agro.proto`. Elas são gravadas em Protobuf, um formato binário compacto que programas em Go, Java e Python leem do mesmo jeito. O sistema usa quatro formas de transporte, cada uma para uma tarefa.
 
-As leituras chegam como `Reading` no mesmo socket UDP dos anúncios, ambos dentro de um
-`UdpPacket`. Uma fonte passa a constar como offline quando fica sem enviar dados por três
-intervalos, com mínimo de 6 s, e volta a constar como online na leitura seguinte.
+| Transporte | Para que é usado | Por que esse |
+|---|---|---|
+| UDP multicast | O Gateway procurar as fontes. | Uma única mensagem chega a todos que escutam o mesmo endereço de grupo (`239.255.10.1:9999`), sem precisar saber quem são. |
+| UDP | As fontes enviarem anúncios e medições ao Gateway (porta 9100). | É leve e rápido. Perder uma medição de vez em quando não prejudica o sistema. |
+| gRPC | O Gateway mandar comandos às válvulas (portas 50061 e 50062). | É uma chamada remota com pergunta e resposta. O Gateway sabe se o comando foi aplicado e recebe o estado novo da válvula. |
+| TCP | O CLI e a ponte do painel falarem com o Gateway (porta 9200). | A conexão é confiável e mantém a ordem. Serve para pedidos e para receber eventos ao vivo. |
 
-O sensor de solo amostra a cada segundo e envia leituras periódicas. Quando a umidade cai
-abaixo de 25%, envia na hora uma leitura marcada como alerta. Para o ruído da medição não
-gerar uma rajada de alertas, ele só volta a alertar depois que a umidade sobe 2 pontos
-acima do limiar.
+## Os fluxos principais
 
-## Serviço gRPC
+### 1. Descoberta
 
-`IrrigationValve` tem dois métodos: `GetState` e `Configure`. O `ValveCommand` usa campos
-`optional` (`active`, `open`, `flow_lpm`, `interval_s`) para que a válvula altere só o que
-veio preenchido, distinguindo "não mexer" de `false` ou zero. A resposta é o `ValveState`
-completo.
+As fontes não sabem o endereço do Gateway. Ele se apresenta primeiro.
 
-Desativar uma válvula (`active = false`) interrompe a telemetria e fecha o fluxo de água,
-mas mantém o servidor gRPC no ar para que ela possa ser reativada.
+1. Ao iniciar, e depois a cada 15 s, o Gateway envia um `DiscoveryRequest` ao grupo multicast. A mensagem diz o IP dele e a porta UDP onde quer receber dados.
+2. Cada fonte que escuta o grupo guarda esse endereço e responde com um `SourceInfo`. Ele traz o nome, o tipo, o talhão, o IP e o intervalo de envio da fonte. Também traz a porta gRPC, que é zero quando a fonte não aceita comandos, e o estado inicial.
+3. O Gateway registra a fonte e avisa os painéis conectados que a lista de fontes mudou.
+
+Até receber a primeira descoberta, a fonte descarta as medições, porque ainda não sabe para onde mandar. A repetição a cada 15 s faz o Gateway encontrar também as fontes que ligam depois dele ou que reiniciam.
+
+### 2. Telemetria
+
+Telemetria é o envio contínuo de medições.
+
+1. Cada fonte envia uma `Reading` por UDP no seu intervalo. A leitura leva o nome da fonte, o talhão, a hora e um conjunto de métricas, como `moisture_pct` ou `flow_lpm`.
+2. Anúncios e leituras chegam na mesma porta. Os dois vêm dentro de um `UdpPacket`, que diz qual dos dois está dentro.
+3. O Gateway atualiza a última leitura da fonte, grava as métricas no banco e repassa a leitura aos painéis conectados.
+
+O sensor de solo verifica a umidade a cada segundo. As leituras periódicas, porém, só saem no intervalo configurado. Quando a umidade cai abaixo de 25%, ele envia na hora uma leitura marcada como alerta. Depois disso, ele só volta a alertar quando a umidade sobe 2 pontos acima do limite. Assim o ruído da medição não gera vários alertas seguidos.
+
+### 3. Detecção de falha
+
+O Gateway não pergunta às fontes se elas estão vivas. Ele observa o silêncio. A cada 2 s, ele marca como offline a fonte que ficou sem enviar nada por três intervalos seguidos, com mínimo de 6 s. A fonte volta a aparecer como online assim que chega a próxima leitura.
+
+### 4. Comando a uma válvula
+
+1. O CLI ou o painel envia ao Gateway um `CommandRequest` com o nome da válvula e o comando.
+2. O Gateway procura a válvula no registro e chama o método `Configure` do serviço gRPC `IrrigationValve`.
+3. A válvula aplica o comando e responde com o `ValveState` completo.
+4. O Gateway atualiza o registro e responde ao pedido com um `CommandResult`.
+
+O `ValveCommand` tem quatro campos opcionais, que são `active`, `open`, `flow_lpm` e `interval_s`. A válvula muda só o que veio preenchido. Assim, um comando que só abre a válvula não zera a vazão por engano.
+
+Desativar a válvula (`active = false`) simula um defeito. Ela para de enviar telemetria e corta a água, mas o serviço gRPC continua no ar para que ela possa ser reativada.
+
+### 5. Consulta ao histórico
+
+O CLI ou o painel envia um `QueryRequest` com o tipo de consulta e a janela de tempo em minutos. O Gateway calcula a resposta no banco e devolve um `QueryResult` com um resumo em texto e uma tabela.
+
+| Consulta | Como é calculada na janela |
+|---|---|
+| Talhão mais seco | Menor média de umidade por talhão. |
+| Consumo de água | Por válvula, o maior menos o menor valor do contador de litros. Os resultados são somados por talhão. |
+| Temperatura | Média, desvio padrão, mínimo e máximo por estação. |
+| Alertas | Número de alertas de solo seco por talhão. |
+
+### 6. Painel ao vivo
+
+O navegador não entende Protobuf sobre TCP. Por isso a ponte do painel fica no meio.
+
+1. A ponte abre uma conexão TCP com o Gateway e assina os eventos. A partir daí, o Gateway empurra para ela cada leitura nova e cada mudança na lista de fontes.
+2. O navegador abre `/events` na ponte. Ela responde com SSE (Server-Sent Events), uma conexão HTTP que fica aberta e recebe eventos em texto.
+3. Comandos e consultas do painel chegam na ponte por `/api/command` e `/api/query`, em JSON. A ponte transforma cada um num pedido TCP ao Gateway.
 
 ## Protocolo TCP
 
-Cada mensagem é precedida por 4 bytes big-endian com o tamanho do payload. O cliente envia
-`ClientRequest` com um `request_id` e uma operação: listar fontes, comandar uma válvula,
-consultar o histórico ou assinar eventos. O gateway responde com `ServerMessage` usando o
-mesmo `request_id`. Depois de uma assinatura, a conexão também recebe leituras e mudanças
-de topologia com `request_id` zero.
+Cada mensagem TCP vai precedida de 4 bytes com o tamanho dela, em ordem *big-endian*. Isso é necessário porque o TCP entrega um fluxo contínuo de bytes, sem marcar onde uma mensagem termina e a próxima começa.
 
-## Consultas
+O cliente envia um `ClientRequest` com um número de pedido (`request_id`) e uma operação. As operações são listar fontes, comandar uma válvula, fazer uma consulta ou assinar eventos. O Gateway responde com um `ServerMessage` que repete o mesmo número. Os eventos empurrados depois de uma assinatura chegam com `request_id` zero.
 
-| Consulta | Cálculo na janela |
-|---|---|
-| Talhão mais seco | Menor média de umidade por talhão |
-| Consumo de água | Soma, por talhão, de máximo − mínimo do contador de litros de cada válvula |
-| Temperatura | Média, desvio padrão populacional, mínimo e máximo por estação |
-| Alertas | Número de alertas de solo seco por talhão |
+## Armazenamento
 
-O histórico é gravado em formato longo, com uma linha por métrica, para que qualquer
-grandeza seja agregada com o mesmo SQL.
+O Gateway guarda tudo num arquivo SQLite, um banco de dados que não precisa de servidor próprio. No Docker, esse arquivo fica no volume `gateway-data`, por isso o histórico sobrevive quando o sistema é desligado.
+
+Há duas tabelas. A `readings` tem uma linha por métrica de cada leitura, com hora, fonte, tipo, talhão, nome da métrica e valor. Esse formato permite calcular qualquer grandeza com a mesma consulta SQL. A `alerts` guarda cada alerta de solo seco com a mensagem.
 
 ## Limitações
 
 - UDP pode perder pacotes, e as consultas trabalham só com o que chegou.
-- O contador de litros fica em memória na válvula. Se ela reiniciar dentro da janela, o
-  consumo calculado fica errado.
-- A detecção de falha se baseia em silêncio, então uma fonte lenta e uma fonte morta só
-  se diferenciam pelo tempo.
-- As simulações são independentes: abrir uma válvula não altera a umidade do solo.
+- O contador de litros fica na memória da válvula. Se ela reiniciar dentro da janela, o consumo calculado sai errado.
+- A detecção de falha se baseia em silêncio. Uma fonte lenta e uma fonte parada só se diferenciam pelo tempo.
+- As simulações são independentes. Abrir uma válvula não altera a umidade do solo.
+- Os serviços usam a rede do próprio computador no Docker (`network_mode: host`), porque a rede padrão do Docker não repassa multicast. Por isso o sistema roda em Linux.

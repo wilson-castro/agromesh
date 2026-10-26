@@ -9,9 +9,15 @@ enviam telemetria por UDP. Um painel web mostra tudo em tempo real.
 - **CLI** e **ponte do painel** (Python), ambos clientes TCP do gateway.
 - **Interface web** (Next.js, TypeScript e shadcn/ui).
 
-A arquitetura e o protocolo estão descritos em [docs/arquitetura.md](docs/arquitetura.md).
+A documentação fica em `docs/`.
+
+- [docs/negocio.md](docs/negocio.md) explica o problema da fazenda e o que o painel permite fazer.
+- [docs/arquitetura.md](docs/arquitetura.md) mostra como as partes se conectam e que mensagens trocam.
+- [docs/servicos.md](docs/servicos.md) descreve cada programa, com portas e configurações.
 
 ## Executando
+
+Para só ligar e usar o sistema, siga o [COMO-RODAR.md](COMO-RODAR.md). O `./iniciar.sh` sobe tudo e espera o painel e as fontes ficarem prontos, e `./iniciar.sh parar` encerra.
 
 Requer Docker com Compose, em Linux. Os serviços usam a rede do host porque a bridge
 padrão do Docker não encaminha multicast.
