@@ -16,17 +16,36 @@ tasks:
     cmds: [go run ./gateway]
 
   weather:
-    desc: Estação meteorológica (Java 21; Maven gera o Protobuf)
+    desc: "Estação meteorológica (Java 21; Maven gera o Protobuf). Ex.: task weather SOURCE_ID=estacao-02"
+    # Variáveis passadas na linha de comando do Task não chegam ao processo
+    # como ambiente; este bloco faz o repasse. Valor vazio cai no padrão.
+    env:
+      SOURCE_ID: "{{.SOURCE_ID}}"
+      FIELD_ID: "{{.FIELD_ID}}"
+      INTERVAL_S: "{{.INTERVAL_S}}"
+      ADVERTISE_IP: "{{.ADVERTISE_IP}}"
     cmds:
       - mvn -B -f sources/weather/pom.xml package
       - java -jar sources/weather/target/weather-0.1.0.jar
 
   soil:
     desc: "Sensor de solo (Python). Ex.: task soil SOURCE_ID=solo-b FIELD_ID=talhao-b"
+    env:
+      SOURCE_ID: "{{.SOURCE_ID}}"
+      FIELD_ID: "{{.FIELD_ID}}"
+      INTERVAL_S: "{{.INTERVAL_S}}"
+      ADVERTISE_IP: "{{.ADVERTISE_IP}}"
     cmds: [uv run python -m sources.soil.main]
 
   valve:
     desc: "Válvula de irrigação (Python). Ex.: task valve SOURCE_ID=valvula-b FIELD_ID=talhao-b"
+    env:
+      SOURCE_ID: "{{.SOURCE_ID}}"
+      FIELD_ID: "{{.FIELD_ID}}"
+      INTERVAL_S: "{{.INTERVAL_S}}"
+      ADVERTISE_IP: "{{.ADVERTISE_IP}}"
+      GRPC_PORT: "{{.GRPC_PORT}}"
+      FLOW_LPM: "{{.FLOW_LPM}}"
     cmds: [uv run python -m sources.valve.main]
 
   web:build:
@@ -45,7 +64,8 @@ tasks:
 
   client:
     desc: "Cliente CLI. Ex.: task client -- list"
-    cmds: [uv run python -m client.main {{.CLI_ARGS}}]
+    cmds:
+      - uv run python -m client.main {{.CLI_ARGS}}
 
   test:
     desc: Testes Go e Python
@@ -54,7 +74,9 @@ tasks:
       - uv run pytest -q
 
   lint:
+    desc: go vet, gofmt e ruff
     cmds:
       - go vet ./...
-      - gofmt -l .
+      # gofmt -l só lista os arquivos; sem o teste a tarefa nunca falharia.
+      - 'out=$(gofmt -l .); test -z "$out" || { echo "$out"; exit 1; }'
       - uv run ruff check .
